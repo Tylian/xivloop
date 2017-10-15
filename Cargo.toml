@@ -1,0 +1,14 @@
+[package]
+name = "xivloop"
+version = "0.1.0"
+authors = ["Tylian <immatyger@gmail.com>"]
+
+[dependencies]
+libc = "0.2.29"
+lame-sys = "0.1.2"
+time = "0.1.38"
+clap = "2.26.2"
+
+[dependencies.vorbis]
+# path = "../vorbis-rs"
+git = "https://github.com/tylian/vorbis-rs"

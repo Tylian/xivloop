@@ -105,7 +105,7 @@ fn main() {
         .about("Loops Final Fantasy XIV .scd.ogg files")
         .arg(Arg::with_name("layer").short("l").long("layer").value_name("NUMBER").help("Layer number to loop, 1 is first, etc.").takes_value(true).validator(is_number).default_value("1"))
         .arg(Arg::with_name("loops").short("r").long("loops").value_name("NUMBER").help("Number of times to loop").takes_value(true).validator(is_number).default_value("2"))
-        .arg(Arg::with_name("fade").short("f").long("fade").value_name("SECONDS").help("Number out duration").takes_value(true).validator(is_number).default_value("10"))
+        .arg(Arg::with_name("fade").short("f").long("fade").value_name("SECONDS").help("Fade out duration").takes_value(true).validator(is_number).default_value("10"))
         .arg(Arg::with_name("yes").short("y").long("assume-yes").help("Assume yes to all prompts"))
         .arg(Arg::with_name("dont_loop").long("dont-loop").help("Do not loop, just output file"))
         .arg(Arg::with_name("INPUT").required(true).help("Input file to process").validator(file_exists))

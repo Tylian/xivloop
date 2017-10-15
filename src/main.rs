@@ -70,34 +70,24 @@ fn interleave_channels(left_channel: &[i16], right_channel: &[i16]) -> Box<[u8]>
 }
 
 fn file_exists(path: String) -> Result<(), String> {
-        if std::fs::metadata(path).is_ok() {
-            Ok(())
-        } else {
-            Err(String::from("File doesn't exist"))
-        }
+        std::fs::metadata(path)
+            .and(Ok(()))
+            .or(Err(String::from("File doesn't exist")))
 }
 
 fn is_number(input: String) -> Result<(), String> {
-        if input.parse::<usize>().is_ok() {
-            Ok(())
-        } else {
-            Err(String::from("Not a valid number"))
-        }
+        input.parse::<usize>()
+            .and(Ok(()))
+            .or(Err(String::from("Not a valid number")))
 }
 
 fn prompt(prompt: &str, default: bool) -> bool {
-    let default_text = match default {
-        true => "Y/n",
-        false => "y/N"
-    };
-
     let stdin = io::stdin();
-    let mut handle = stdin.lock();
     let mut input = String::new();
     loop {
-        print!("{} [{}] ", prompt, default_text);
+        print!("{} [{}] ", prompt, if default { "Y/n" } else { "y/N" });
         io::stdout().flush().ok().expect("Could not flush stdout");
-        handle.read_line(&mut input).ok().expect("Error reading line");
+        stdin.lock().read_line(&mut input).ok().expect("Error reading line");
         match input.trim_right_matches("\n").to_string().to_lowercase().trim() {
             "y" | "yes" => { return true },
             "n" | "no"  => { return false },

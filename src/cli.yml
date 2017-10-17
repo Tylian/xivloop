@@ -1,0 +1,41 @@
+name: xivloop
+version: "1.0"
+author: Tylian <me@tylian.net>
+about: Loops Final Fantasy XIV .scd.ogg files
+args:
+    - layer:
+        short: l
+        long: layer
+        value_name: NUMBER
+        help: Layer number to loop, 1 is first, etc.
+        takes_value: true
+        default_value: "1"
+    - loops:
+        short: r
+        long: loops
+        value_name: NUMBER
+        help: Number of times to loop
+        takes_value: true
+        default_value: "2"
+    - fade:
+        short: f
+        long: fade
+        value_name: SECONDS
+        help: Fade out duration, in seconds
+        takes_value: true
+        default_value: "10"
+    - yes:
+        short: y
+        long: assume-yes
+        help: Run in non-interactive mode, assuming yes for all prompts
+    - no-process:
+        long: "no-process"
+        help: "Do not process the file, only output encoded mp3"
+    - INPUT:
+        help: Sets the input .scd.ogg file to process
+        index: 1
+        required: true
+    - OUTPUT:
+        help: Output location of the .mp3 file
+        index: 2
+        required: true

@@ -1,94 +1,74 @@
-extern crate lame_sys;
-extern crate vorbis;
-extern crate libc;
-extern crate time;
+extern crate byteorder;
+#[macro_use]
 extern crate clap;
+extern crate lame_sys;
+extern crate libc;
+extern crate vorbis;
 
-use clap::{App, Arg};
-
-use std::fs::File;
-use std::path::Path;
-use std::io::prelude::*;
-use std::io::Cursor;
-
-use std::io;
-
+use byteorder::{ByteOrder, LittleEndian};
+use clap::App;
 use lame_sys::*;
+use std::fs::File;
+use std::io;
+use std::io::Cursor;
+use std::io::prelude::*;
+use std::path::Path;
+use timers::Timer;
 use vorbis::Decoder;
 
-fn encode_mp3<R, W>(reader: &mut R, writer: &mut W)
-    where R: Read, W: Write {
+mod timers;
 
+fn encode_mp3<R: Read, W: Write + Seek>(reader: &mut R, writer: &mut W) {
     let mut in_buf = [0u8; 8192 << 4]; // 8192 samples per channel (i16 samples, 2 channels)
-    let mut out_buf = [0u8; 0x7fff]; // swear to fuk
+    let mut out_buf = [0u8; 48160]; // (8192 << 4 >> 2) * 1.25 + 7200
+    let mut out_vec = vec![0u8; 0];
 
     let lame = unsafe { lame_init() };
 
     unsafe {
-        lame_set_in_samplerate(lame, 44100);
-        lame_set_VBR(lame, lame_sys::vbr_default);
-        lame_set_VBR_quality(lame, 6.0);
+        lame_set_num_channels(lame, 2);
+        lame_set_mode(lame, MPEG_mode::JOINT_STEREO);
+        lame_set_preset(lame, preset_mode::V2 as libc::c_int);
         lame_init_params(lame);
     }
 
     while let Ok(bytes_read) = reader.read(&mut in_buf) {
-        if bytes_read == 0 { break }
+        if bytes_read == 0 {
+            break;
+        }
 
-        let write = unsafe {
+        let written = unsafe {
             lame_encode_buffer_interleaved(
                 lame,
-                in_buf.as_mut_ptr() as *mut i16,
-                (bytes_read >> 2) as i32,
+                in_buf.as_mut_ptr() as *mut libc::c_short,
+                (bytes_read >> 2) as libc::c_int,
                 out_buf.as_mut_ptr(),
-                out_buf.len() as i32,
+                out_buf.len() as libc::c_int,
             )
         };
-
-        writer.write(&out_buf[..write as usize]).unwrap();
+        out_vec.extend_from_slice(&out_buf[..written as usize]);
     }
 
-    let write = unsafe {
-        lame_encode_flush(
-            lame,
-            out_buf.as_mut_ptr(),
-            out_buf.len() as i32
-        )
+    let written =
+        unsafe { lame_encode_flush(lame, out_buf.as_mut_ptr(), out_buf.len() as libc::c_int) };
+    out_vec.extend_from_slice(&out_buf[..written as usize]);
+
+    let written = unsafe {
+        lame_get_lametag_frame(lame, out_buf.as_mut_ptr(), out_buf.len() as libc::size_t)
     };
-    writer.write(&out_buf[..write as usize]).unwrap();
-}
 
-fn interleave_channels(left_channel: &[i16], right_channel: &[i16]) -> Box<[u8]> {
-    let mut pcm = vec![0u8; (left_channel.len() + right_channel.len() << 1) as usize].into_boxed_slice();
-    for i in 0..left_channel.len() {
-        pcm[i*4]   = (left_channel[i] & 0xff) as u8;
-        pcm[i*4+1] = (left_channel[i] >> 8) as u8;
-        pcm[i*4+2] = (right_channel[i] & 0xff) as u8;
-        pcm[i*4+3] = (right_channel[i] >> 8) as u8;
-    }
-
-    pcm
-}
-
-fn file_exists(path: String) -> Result<(), String> {
-        if std::fs::metadata(path).is_ok() {
-            Ok(())
-        } else {
-            Err(String::from("File doesn't exist"))
-        }
-}
-
-fn is_number(input: String) -> Result<(), String> {
-        if input.parse::<usize>().is_ok() {
-            Ok(())
-        } else {
-            Err(String::from("Not a valid number"))
-        }
+    writer.write(&out_buf[..written as usize]).expect(
+        "Failed to write lame header",
+    );
+    writer.write(out_vec.as_slice()).expect(
+        "Failed to write output",
+    );
 }
 
 fn prompt(prompt: &str, default: bool) -> bool {
     let default_text = match default {
         true => "Y/n",
-        false => "y/N"
+        false => "y/N",
     };
 
     let stdin = io::stdin();
@@ -97,30 +77,24 @@ fn prompt(prompt: &str, default: bool) -> bool {
     loop {
         print!("{} [{}] ", prompt, default_text);
         io::stdout().flush().ok().expect("Could not flush stdout");
-        handle.read_line(&mut input).ok().expect("Error reading line");
-        match input.trim_right_matches("\n").to_string().to_lowercase().trim() {
-            "y" | "yes" => { return true },
-            "n" | "no"  => { return false },
-            ""          => { return default },
-            _           => { println!("Invalid input, expecting [y/yes/n/no] or an empty line.") }
+        handle.read_line(&mut input).ok().expect(
+            "Error reading line",
+        );
+        match input.to_string().to_lowercase().trim() {
+            "y" | "yes" => return true,
+            "n" | "no" => return false,
+            "" => return default,
+            _ => println!("Invalid input, expecting [y/yes/n/no] or an empty line."),
         }
     }
 }
 
 fn main() {
-    let start = time::precise_time_s();
-    let matches = App::new("xivloop")
-        .version("1.0")
-        .author("Tylian <me@tylian.net>")
-        .about("Loops Final Fantasy XIV .scd.ogg files")
-        .arg(Arg::with_name("layer").short("l").long("layer").value_name("NUMBER").help("Layer number to loop, 1 is first, etc.").takes_value(true).validator(is_number).default_value("1"))
-        .arg(Arg::with_name("loops").short("r").long("loops").value_name("NUMBER").help("Number of times to loop").takes_value(true).validator(is_number).default_value("2"))
-        .arg(Arg::with_name("fade").short("f").long("fade").value_name("SECONDS").help("Fade out duration").takes_value(true).validator(is_number).default_value("10"))
-        .arg(Arg::with_name("yes").short("y").long("assume-yes").help("Assume yes to all prompts"))
-        .arg(Arg::with_name("dont_loop").long("dont-loop").help("Do not loop, just output file"))
-        .arg(Arg::with_name("INPUT").required(true).help("Input file to process").validator(file_exists))
-        .arg(Arg::with_name("OUTPUT").required(true).help("Output file location"))
-    .get_matches();
+    let mut timer = Timer::new();
+    timer.start("program");
+
+    let yml = load_yaml!("cli.yml");
+    let matches = App::from_yaml(yml).get_matches();
 
     let input_path = Path::new(matches.value_of("INPUT").unwrap());
     let output_path = Path::new(matches.value_of("OUTPUT").unwrap());
@@ -128,128 +102,169 @@ fn main() {
     if output_path.exists() && !matches.is_present("yes") {
         if !prompt("Output file exists. Overwrite?", true) {
             println!("Okay. Bye!");
-           std::process::exit(0);
+            std::process::exit(0);
         }
     }
-    
-    // holy shit path lol
-    println!("Encoding {}...", input_path.file_name().unwrap().to_str().unwrap());
-    
-    let file = match File::open(input_path) {
-        Ok(_f) => _f,
-        Err(e) => {
-            println!("Error opening input file!\n{}", e);
-            std::process::exit(1);
-        }
+
+    println!(
+        "Encoding {}...",
+        input_path.file_name().unwrap().to_str().unwrap()
+    );
+
+    let input_file = File::open(input_path).unwrap_or_else(|e| {
+        println!("Count not open input file: {}", e);
+        std::process::exit(1);
+    });
+
+    let mut output_file = File::create(output_path).unwrap_or_else(|e| {
+        println!("Count not open output file: {}", e);
+        std::process::exit(1);
+    });
+
+    if cfg!(debug_assertions) {
+        timer.start("comments")
     };
 
-    let mut out = match File::create(output_path) {
-        Ok(_f) => _f,
-        Err(e) => {
-            println!("Count not open output file!\n{}", e);
-            std::process::exit(1);
-        }
-    };
-    
-    let mut decoder = Decoder::new(file).unwrap();
-
+    let mut decoder = Decoder::new(input_file).unwrap();
     let mut loop_start = 0;
     let mut loop_end = 0;
 
-    let layer:usize = matches.value_of("layer").unwrap().parse::<usize>().unwrap() - 1;
-    let fade:usize = matches.value_of("fade").unwrap().parse().unwrap();
-    let loops:usize = matches.value_of("loops").unwrap().parse().unwrap();
-    let mut dont_loop = matches.is_present("dont_loop");
+    let layer: usize = matches.value_of("layer").unwrap().parse::<usize>().expect(
+        "Layer is not a number",
+    ) - 1;
+    let fade: usize = matches.value_of("fade").unwrap().parse().expect(
+        "Fade duration is not a number",
+    );
+    let loops: usize = matches.value_of("loops").unwrap().parse().expect(
+        "Loop count is not a number",
+    );
 
     for comment in decoder.comments().iter() {
         if comment.starts_with("LoopStart=") {
-            loop_start = comment[10..].parse().unwrap();
+            loop_start = comment[10..].parse().expect("LoopStart is not a number!");
         } else if comment.starts_with("LoopEnd=") {
-            loop_end = comment[8..].parse().unwrap();
+            loop_end = comment[8..].parse().expect("LoopEnd is not a number!");
         }
     }
 
-    if loop_start == 0 || loop_end == 0 {
-        dont_loop = true;
-    }
+    if cfg!(debug_assertions) {
+        timer.report("comments")
+    };
 
-    let loop_length = loop_end - loop_start;
+    // Catch both error states and states where loop start and end are 0
+    let process = if loop_end <= loop_start {
+        false
+    } else {
+        !matches.is_present("no-process")
+    };
 
-    let mut original_left = Vec::new();
-    let mut original_right = Vec::new();
-
+    let mut source = Vec::new();
     let mut frequency = 0;
 
+    if cfg!(debug_assertions) {
+        timer.start("ogg")
+    };
     for p in decoder.packets() {
         if let Ok(packet) = p {
             frequency = packet.rate;
 
-            original_left.reserve(packet.data.len() / packet.channels as usize);
-            original_right.reserve(packet.data.len() / packet.channels as usize);
+            source.reserve(packet.data.len() / packet.channels as usize * 2);
 
             // special case: mono
             if packet.channels == 1 {
-                original_left.extend(packet.data.clone());
-                original_right.extend(packet.data.clone());
+                for sample in packet.data {
+                    source.push(sample);
+                    source.push(sample);
+                }
             } else {
                 if layer >= packet.channels as usize / 2 {
-                    println!("This file only has {} layer(s), when you asked to encode layer {}!", packet.channels / 2, layer + 1);
+                    println!(
+                        "This file only has {} layer(s), when you asked to encode layer {}!",
+                        packet.channels / 2,
+                        layer + 1
+                    );
                     std::process::exit(1);
                 };
 
                 for i in 0..packet.data.len() / packet.channels as usize {
-                    original_left.push(packet.data[i * packet.channels as usize + (layer as usize * 2) ]);
-                    original_right.push(packet.data[i * packet.channels as usize + (layer as usize * 2) + 1 ])
+                    let index = i * packet.channels as usize + (layer as usize * 2);
+                    source.push(packet.data[index]);
+                    source.push(packet.data[index + 1]);
                 }
             }
         }
     }
 
-    let pcm = if !dont_loop {
-        let fade_length:usize = fade * frequency as usize;
+    if cfg!(debug_assertions) {
+        timer.report("ogg");
+        timer.start("loop")
+    };
 
-        let mut left_channel = vec![0i16; loop_start + loop_length * loops + fade_length].into_boxed_slice();
-        let mut right_channel = vec![0i16; loop_start + loop_length * loops + fade_length].into_boxed_slice();
+    let samples = if process {
+        let loop_start = loop_start * 2;
+        let loop_end = loop_end * 2;
+        let loop_length = loop_end - loop_start;
+
+        let fade_length = fade * frequency as usize * 2;
+
+        let mut pcm = vec![0i16; loop_start + loop_length * loops + fade_length];
 
         // intro
-        left_channel[0..loop_start].copy_from_slice(&original_left[..loop_start]);
-        right_channel[0..loop_start].copy_from_slice(&original_right[..loop_start]);
+        pcm[0..loop_start].copy_from_slice(&source[..loop_start]);
 
         // loops
         for i in 0..loops {
             let slice_start = loop_start + loop_length * i;
             let slice_end = loop_start + loop_length * i + loop_length;
-            left_channel[slice_start..slice_end].copy_from_slice(&original_left[loop_start..loop_end]);
-            right_channel[slice_start..slice_end].copy_from_slice(&original_right[loop_start..loop_end]);
+            pcm[slice_start..slice_end].copy_from_slice(&source[loop_start..loop_end]);
         }
 
         // fade
         if fade_length > 0 {
-            let left_fade = &mut original_left[loop_start..(loop_start + fade_length)];
-            let right_fade = &mut original_right[loop_start..(loop_start + fade_length)];
-
-            // cut off one sample so I don't divide by 0 lol
-            for i in 0..fade_length  {
-                let scale = 1.0 - i as f64 / fade_length as f64;
-                left_fade[i] = (left_fade[i] as f64 * scale) as i16;
-                right_fade[i] = (right_fade[i] as f64 * scale) as i16;
+            let fade = &mut source[loop_start..(loop_start + fade_length)];
+            for i in 0..(fade_length >> 1) {
+                let scale = 1.0 - i as f64 / (fade_length >> 1) as f64;
+                fade[i * 2] = (fade[i * 2] as f64 * scale) as i16;
+                fade[i * 2 + 1] = (fade[i * 2 + 1] as f64 * scale) as i16;
             }
 
             let slice_start = loop_start + loop_length * loops;
             let slice_end = loop_start + loop_length * loops + fade_length;
-            left_channel[slice_start..slice_end].copy_from_slice(&left_fade);
-            right_channel[slice_start..slice_end].copy_from_slice(&right_fade);
+            pcm[slice_start..slice_end].copy_from_slice(&fade);
         }
-        
-        interleave_channels(&left_channel, &right_channel)
-    } else {
-        let left_channel = original_left.into_boxed_slice();
-        let right_channel = original_right.into_boxed_slice();
 
-        interleave_channels(&left_channel, &right_channel)
+        pcm
+    } else {
+        source
+    };
+
+    if cfg!(debug_assertions) {
+        timer.report("loop");
+        timer.start("transmute")
+    };
+
+    let mut pcm = vec![0u8; samples.len() * 2];
+    LittleEndian::write_i16_into(&samples, &mut pcm);
+
+    if cfg!(debug_assertions) {
+        timer.report("transmute")
     };
 
     // pcm now contains the full pcm data
-    encode_mp3(&mut Cursor::new(pcm), &mut out);
-    println!("Encoded {} in {:.3}s", output_path.file_name().unwrap().to_str().unwrap(), time::precise_time_s() - start);
+    if cfg!(debug_assertions) {
+        timer.start("mp3")
+    };
+
+    encode_mp3(&mut Cursor::new(pcm), &mut output_file);
+    if cfg!(debug_assertions) {
+        timer.report("mp3")
+    };
+
+    timer.report_with("program", |elapsed| {
+        println!(
+            "Encoded {} in {:.3}s",
+            output_path.file_name().unwrap().to_str().unwrap(),
+            elapsed.unwrap()
+        );
+    });
 }

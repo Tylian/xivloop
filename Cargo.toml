@@ -7,8 +7,13 @@ authors = ["Tylian <immatyger@gmail.com>"]
 libc = "0.2.29"
 lame-sys = "0.1.2"
 time = "0.1.38"
-clap = "2.26.2"
+byteorder = "1.1.0"
+
+[dependencies.clap]
+version = "2.16.2"
+features = ["yaml"]
 
 [dependencies.vorbis]
-# path = "../vorbis-rs"
+#path = "../vorbis-rs"
 git = "https://github.com/tylian/vorbis-rs"
+default-features = false

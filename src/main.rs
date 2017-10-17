@@ -18,7 +18,7 @@ use vorbis::Decoder;
 
 mod timers;
 
-fn encode_mp3<R: Read, W: Write + Seek>(reader: &mut R, writer: &mut W) {
+fn encode_mp3<R: Read, W: Write>(reader: &mut R, writer: &mut W) {
     let mut in_buf = [0u8; 8192 << 4]; // 8192 samples per channel (i16 samples, 2 channels)
     let mut out_buf = [0u8; 48160]; // (8192 << 4 >> 2) * 1.25 + 7200
     let mut out_vec = vec![0u8; 0];

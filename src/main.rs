@@ -28,6 +28,7 @@ fn encode_mp3<R: Read, W: Write + Seek>(reader: &mut R, writer: &mut W) {
     unsafe {
         lame_set_num_channels(lame, 2);
         lame_set_mode(lame, MPEG_mode::JOINT_STEREO);
+        lame_set_VBR(lame, vbr_mode::vbr_mtrh);
         lame_set_preset(lame, preset_mode::V2 as libc::c_int);
         lame_init_params(lame);
     }
@@ -72,10 +73,9 @@ fn prompt(prompt: &str, default: bool) -> bool {
     };
 
     let stdin = io::stdin();
-    let mut handle = stdin.lock();
     let mut input = String::new();
     loop {
-        print!("{} [{}] ", prompt, default_text);
+        print!("{} [{}] ", prompt, if default { "Y/n" } else { "y/N" });
         io::stdout().flush().ok().expect("Could not flush stdout");
         handle.read_line(&mut input).ok().expect(
             "Error reading line",

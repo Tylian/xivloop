@@ -67,11 +67,6 @@ fn encode_mp3<R: Read, W: Write>(reader: &mut R, writer: &mut W) {
 }
 
 fn prompt(prompt: &str, default: bool) -> bool {
-    let default_text = match default {
-        true => "Y/n",
-        false => "y/N",
-    };
-
     let stdin = io::stdin();
     let mut input = String::new();
     loop {

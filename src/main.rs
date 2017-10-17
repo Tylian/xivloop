@@ -77,7 +77,7 @@ fn prompt(prompt: &str, default: bool) -> bool {
     loop {
         print!("{} [{}] ", prompt, if default { "Y/n" } else { "y/N" });
         io::stdout().flush().ok().expect("Could not flush stdout");
-        handle.read_line(&mut input).ok().expect(
+        stdin.lock().read_line(&mut input).ok().expect(
             "Error reading line",
         );
         match input.to_string().to_lowercase().trim() {

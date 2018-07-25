@@ -1,4 +1,6 @@
 target/
+in/
+out/
 
 # precompiled mp3lame
 mp3lame.lib

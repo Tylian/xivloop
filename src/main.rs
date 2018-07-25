@@ -13,10 +13,7 @@ use std::io;
 use std::io::Cursor;
 use std::io::prelude::*;
 use std::path::Path;
-use timers::Timer;
 use vorbis::Decoder;
-
-mod timers;
 
 fn encode_mp3<R: Read, W: Write>(reader: &mut R, writer: &mut W) {
     let mut in_buf = [0u8; 8192 << 4]; // 8192 samples per channel (i16 samples, 2 channels)
@@ -37,7 +34,6 @@ fn encode_mp3<R: Read, W: Write>(reader: &mut R, writer: &mut W) {
         if bytes_read == 0 {
             break;
         }
-
         let written = unsafe {
             lame_encode_buffer_interleaved(
                 lame,
@@ -85,9 +81,6 @@ fn prompt(prompt: &str, default: bool) -> bool {
 }
 
 fn main() {
-    let mut timer = Timer::new();
-    timer.start("program");
-
     let yml = load_yaml!("cli.yml");
     let matches = App::from_yaml(yml).get_matches();
 
@@ -116,10 +109,6 @@ fn main() {
         std::process::exit(1);
     });
 
-    if cfg!(debug_assertions) {
-        timer.start("comments")
-    };
-
     let mut decoder = Decoder::new(input_file).unwrap();
     let mut loop_start = 0;
     let mut loop_end = 0;
@@ -142,10 +131,6 @@ fn main() {
         }
     }
 
-    if cfg!(debug_assertions) {
-        timer.report("comments")
-    };
-
     // Catch both error states and states where loop start and end are 0
     let process = if loop_end <= loop_start {
         false
@@ -156,9 +141,6 @@ fn main() {
     let mut source = Vec::new();
     let mut frequency = 0;
 
-    if cfg!(debug_assertions) {
-        timer.start("ogg")
-    };
     for p in decoder.packets() {
         if let Ok(packet) = p {
             frequency = packet.rate;
@@ -189,11 +171,6 @@ fn main() {
             }
         }
     }
-
-    if cfg!(debug_assertions) {
-        timer.report("ogg");
-        timer.start("loop")
-    };
 
     let samples = if process {
         let loop_start = loop_start * 2;
@@ -233,33 +210,9 @@ fn main() {
         source
     };
 
-    if cfg!(debug_assertions) {
-        timer.report("loop");
-        timer.start("transmute")
-    };
-
     let mut pcm = vec![0u8; samples.len() * 2];
     LittleEndian::write_i16_into(&samples, &mut pcm);
 
-    if cfg!(debug_assertions) {
-        timer.report("transmute")
-    };
-
     // pcm now contains the full pcm data
-    if cfg!(debug_assertions) {
-        timer.start("mp3")
-    };
-
     encode_mp3(&mut Cursor::new(pcm), &mut output_file);
-    if cfg!(debug_assertions) {
-        timer.report("mp3")
-    };
-
-    timer.report_with("program", |elapsed| {
-        println!(
-            "Encoded {} in {:.3}s",
-            output_path.file_name().unwrap().to_str().unwrap(),
-            elapsed.unwrap()
-        );
-    });
 }

@@ -7,11 +7,8 @@ use std::path::PathBuf;
 
 mod decoder;
 mod encoder;
-mod timer;
-
 use crate::decoder::{decode_ogg, DecodedFile};
 use crate::encoder::encode_mp3;
-use crate::timer::Timer;
 
 #[derive(Clap, Debug)]
 /// Converts raw OGG files extracted from Final Fantasy XIV into playable MP3 files, optinally looping and fading the audio out
@@ -134,15 +131,11 @@ fn main() -> Result<(), Box<dyn Error>> {
     );
 
 
-    let mut decoded = {
-        let _timer = Timer::new("Decode OGG");
-        decode_ogg(opts.layer - 1, &opts)
-    }?;
+    let mut decoded = decode_ogg(opts.layer - 1, &opts)?;
 
     // Catch both error states and states where loop start and end are 0
     let should_process = opts.process && decoded.loop_end >= decoded.loop_start;
     let (left, right) = if should_process {
-        let _timer = Timer::new("Process samples");
         process_samples(&mut decoded, &opts)
     } else {
         decoded.samples
@@ -151,10 +144,7 @@ fn main() -> Result<(), Box<dyn Error>> {
     let mut output_file = File::create(&opts.output).with_context(|| format!("Could not open output file {:?} for writing", &opts.output))?;
 
     // pcm now contains the full pcm data
-    {
-        let _timer = Timer::new("Encode MP3");
-        encode_mp3(&left, &right, &mut output_file)
-    }?;
+    encode_mp3(&left, &right, &mut output_file)?;
 
     Ok(())
 }

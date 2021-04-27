@@ -132,7 +132,6 @@ fn main() -> Result<(), Box<dyn Error>> {
 
     // Catch both error states and states where loop start and end are 0
     let should_process = opts.process && decoded.loop_end >= decoded.loop_start;
-
     let samples = if should_process {
         process_samples(&mut decoded, &opts)
     } else {

@@ -1,9 +1,8 @@
 use anyhow::{anyhow, Context, Result};
-use byteorder::{ByteOrder, LittleEndian};
 use clap::Clap;
 use std::error::Error;
 use std::fs::File;
-use std::io::{self, BufRead, Cursor, Write};
+use std::io::{self, BufRead, Write};
 use std::path::PathBuf;
 
 mod decoder;
@@ -66,37 +65,41 @@ fn prompt(prompt: &str, default: bool) -> Result<bool> {
     }
 }
 
-fn process_samples(decoded: &DecodedFile, opts: &CliOpts) -> Vec<i16> {
-    let loop_start = decoded.loop_start * 2;
-    let loop_end = decoded.loop_end * 2;
+fn process_samples(decoded: &DecodedFile, opts: &CliOpts) -> (Vec<i16>, Vec<i16>) {
+    let loop_start = decoded.loop_start;
+    let loop_end = decoded.loop_end;
     let loop_length = loop_end - loop_start;
 
-    let fade_length = opts.fade * decoded.frequency as usize * 2;
+    let fade_length = opts.fade * decoded.frequency as usize;
 
-    // intro samples
-    let intro = decoded.samples[..loop_start].iter();
+    let process_channel = |samples: &[i16]| {
+        // intro samples
+        let intro = samples[..loop_start].iter();
 
-    // looping body samples
-    let body = decoded.samples[loop_start..loop_end].into_iter()
-        .cycle()
-        .take(loop_length * opts.loops);
+        // looping body samples
+        let body = samples[loop_start..loop_end].iter()
+            .cycle()
+            .take(loop_length * opts.loops);
 
-    // fading outro samples
-    let fade_length_float = (fade_length >> 1) as f64;
-    let outro = decoded.samples[loop_start..(loop_start + fade_length)]
-        .chunks_exact(2)
-        .enumerate()
-        // linear scale index into fade duration
-        .map(|(i, chunk)| (1.0 - i as f64 / fade_length_float, chunk))
-        // and then apply the scale to each element
-        .flat_map(|(scale, chunk)| chunk.iter().map(move |sample| (*sample as f64 * scale) as i16));
+        // fading outro samples
+        let outro = samples[loop_start..(loop_start + fade_length)].iter()
+            .enumerate()
+            .map(|(i, &sample)| {
+                let scale = 1.0 - i as f64 / fade_length as f64;
+                (sample as f64 * scale) as i16
+            });
 
-    // optimization: working on references and then copying at the end seems to yield better performance
-    intro
-        .chain(body)
-        .copied()
-        .chain(outro)
-        .collect::<Vec<_>>()
+        // optimization: working on references and then copying at the end seems to yield better performance
+        intro
+            .chain(body)
+            .copied()
+            .chain(outro)
+            .collect::<Vec<i16>>()
+    };
+
+    let (left, right) = &decoded.samples;
+
+    (process_channel(left), process_channel(right))
 }
 
 fn main() -> Result<(), Box<dyn Error>> {
@@ -138,22 +141,19 @@ fn main() -> Result<(), Box<dyn Error>> {
 
     // Catch both error states and states where loop start and end are 0
     let should_process = opts.process && decoded.loop_end >= decoded.loop_start;
-    let samples = if should_process {
+    let (left, right) = if should_process {
         let _timer = Timer::new("Process samples");
         process_samples(&mut decoded, &opts)
     } else {
         decoded.samples
     };
 
-    let mut pcm = vec![0u8; samples.len() * 2];
-    LittleEndian::write_i16_into(&samples, &mut pcm);
-
     let mut output_file = File::create(&opts.output).with_context(|| format!("Could not open output file {:?} for writing", &opts.output))?;
 
     // pcm now contains the full pcm data
     {
         let _timer = Timer::new("Encode MP3");
-        encode_mp3(&mut Cursor::new(pcm), &mut output_file)
+        encode_mp3(&left, &right, &mut output_file)
     }?;
 
     Ok(())

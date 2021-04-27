@@ -299,7 +299,6 @@ name = "xivloop"
 version = "0.2.0"
 dependencies = [
  "anyhow",
- "byteorder",
  "clap",
  "lame-sys",
  "lewton",

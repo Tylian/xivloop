@@ -1,4 +1,4 @@
-use std::{collections::HashMap, fs::File, iter};
+use std::{collections::HashMap, fs::File};
 
 use anyhow::{Context, bail};
 use lewton::inside_ogg::OggStreamReader;
@@ -7,7 +7,7 @@ use crate::CliOpts;
 
 #[derive(Debug)]
 pub struct DecodedFile {
-    pub samples: Vec<i16>,
+    pub samples: (Vec<i16>, Vec<i16>),
     pub loop_start: usize,
     pub loop_end: usize,
     pub frequency: u32
@@ -25,7 +25,8 @@ pub fn decode_ogg(layer: usize, opts: &CliOpts) -> anyhow::Result<DecodedFile> {
     let channels = srr.ident_hdr.audio_channels as usize;
     let frequency = srr.ident_hdr.audio_sample_rate;
 
-    let mut samples = Vec::new();
+    let mut left_samples = Vec::new();
+    let mut right_samples = Vec::new();
 
     if channels == 1 && layer > 1 {
         bail!("This file is mono channel, I can only encode layer 1 and you asked for {}!", layer + 1);
@@ -40,13 +41,14 @@ pub fn decode_ogg(layer: usize, opts: &CliOpts) -> anyhow::Result<DecodedFile> {
             _ => (&packet[layer], &packet[layer + 1])
         };
 
-        let interleaved = left.iter()
+        /*let interleaved = left.iter()
             .zip(right.iter())
             .flat_map(|(a, b)| iter::once(a).chain(iter::once(b)))
-            .copied();
+            .copied();*/
 
-        samples.extend(interleaved);
+        left_samples.extend(left);
+        right_samples.extend(right);
     }
 
-    Ok(DecodedFile { samples, loop_start, loop_end, frequency })
+    Ok(DecodedFile { samples: (left_samples, right_samples), loop_start, loop_end, frequency })
 }

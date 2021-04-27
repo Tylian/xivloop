@@ -1,218 +1,151 @@
-extern crate byteorder;
-#[macro_use]
-extern crate clap;
-extern crate lame_sys;
-extern crate libc;
-extern crate vorbis;
-
+use anyhow::{anyhow, Context, Result};
 use byteorder::{ByteOrder, LittleEndian};
-use clap::App;
-use lame_sys::*;
+use clap::Clap;
+use std::error::Error;
 use std::fs::File;
-use std::io;
-use std::io::Cursor;
-use std::io::prelude::*;
-use std::path::Path;
-use vorbis::Decoder;
+use std::io::{self, BufRead, Cursor, Write};
+use std::path::PathBuf;
 
-fn encode_mp3<R: Read, W: Write>(reader: &mut R, writer: &mut W) {
-    let mut in_buf = [0u8; 8192 << 4]; // 8192 samples per channel (i16 samples, 2 channels)
-    let mut out_buf = [0u8; 48160]; // (8192 << 4 >> 2) * 1.25 + 7200
-    let mut out_vec = vec![0u8; 0];
+mod decoder;
+mod encoder;
 
-    let lame = unsafe { lame_init() };
+use decoder::{decode_ogg, DecodedFile};
+use encoder::encode_mp3;
 
-    unsafe {
-        lame_set_num_channels(lame, 2);
-        lame_set_mode(lame, MPEG_mode::JOINT_STEREO);
-        lame_set_VBR(lame, vbr_mode::vbr_mtrh);
-        lame_set_preset(lame, preset_mode::V2 as libc::c_int);
-        lame_init_params(lame);
-    }
+#[derive(Clap, Debug)]
+/// Converts raw OGG files extracted from Final Fantasy XIV into playable MP3 files, optinally looping and fading the audio out
+pub struct CliOpts {
+    #[clap(parse(from_os_str))]
+    /// Input OGG file to be looped
+    input: PathBuf,
 
-    while let Ok(bytes_read) = reader.read(&mut in_buf) {
-        if bytes_read == 0 {
-            break;
-        }
-        let written = unsafe {
-            lame_encode_buffer_interleaved(
-                lame,
-                in_buf.as_mut_ptr() as *mut libc::c_short,
-                (bytes_read >> 2) as libc::c_int,
-                out_buf.as_mut_ptr(),
-                out_buf.len() as libc::c_int,
-            )
-        };
-        out_vec.extend_from_slice(&out_buf[..written as usize]);
-    }
+    #[clap(parse(from_os_str))]
+    /// Output path, will be created if it doesn't exist
+    output: PathBuf,
 
-    let written =
-        unsafe { lame_encode_flush(lame, out_buf.as_mut_ptr(), out_buf.len() as libc::c_int) };
-    out_vec.extend_from_slice(&out_buf[..written as usize]);
+    #[clap(short, long)]
+    /// Automagically name the output file based on input file, will treat <output> as a path rather than a file
+    automatic_name: bool,
 
-    let written = unsafe {
-        lame_get_lametag_frame(lame, out_buf.as_mut_ptr(), out_buf.len() as libc::size_t)
-    };
+    #[clap(short, long = "no-process", parse(from_flag = std::ops::Not::not))]
+    /// Do not process the file; will not loop and fade out the audio
+    process: bool,
 
-    writer.write(&out_buf[..written as usize]).expect(
-        "Failed to write lame header",
-    );
-    writer.write(out_vec.as_slice()).expect(
-        "Failed to write output",
-    );
+    #[clap(short, long)]
+    /// Answer yes to all prompts
+    yes: bool,
+
+    #[clap(short, long, default_value = "1")]
+    /// Layer to loop, starts at 1
+    layer: usize,
+
+    #[clap(short, long, default_value = "10")]
+    /// Fade out duration, in seconds
+    fade: usize,
+
+    #[clap(short = 'r', long, default_value = "2")]
+    /// Number of times to loop before fading out
+    loops: usize,
 }
 
-fn prompt(prompt: &str, default: bool) -> bool {
+fn prompt(prompt: &str, default: bool) -> Result<bool> {
     let stdin = io::stdin();
     let mut input = String::new();
     loop {
         print!("{} [{}] ", prompt, if default { "Y/n" } else { "y/N" });
-        io::stdout().flush().ok().expect("Could not flush stdout");
-        stdin.lock().read_line(&mut input).ok().expect(
-            "Error reading line",
-        );
+        io::stdout().flush().context("Unable to flush stdout")?;
+        stdin.lock().read_line(&mut input).context("Unable to read stdin")?;
         match input.to_string().to_lowercase().trim() {
-            "y" | "yes" => return true,
-            "n" | "no" => return false,
-            "" => return default,
+            "y" | "yes" => return Ok(true),
+            "n" | "no" => return Ok(false),
+            "" => return Ok(default),
             _ => println!("Invalid input, expecting [y/yes/n/no] or an empty line."),
         }
     }
 }
 
-fn main() {
-    let yml = load_yaml!("cli.yml");
-    let matches = App::from_yaml(yml).get_matches();
+fn process_pcm(decoded: &DecodedFile, opts: &CliOpts) -> Vec<i16> {
+    let loop_start = decoded.loop_start * 2;
+    let loop_end = decoded.loop_end * 2;
+    let loop_length = loop_end - loop_start;
 
-    let input_path = Path::new(matches.value_of("INPUT").unwrap());
-    let output_path = Path::new(matches.value_of("OUTPUT").unwrap());
+    let fade_length = opts.fade * decoded.frequency as usize * 2;
 
-    if output_path.exists() && !matches.is_present("yes") {
-        if !prompt("Output file exists. Overwrite?", true) {
-            println!("Okay. Bye!");
-            std::process::exit(0);
+    // intro samples
+    let intro = decoded.samples[..loop_start].iter();
+
+    // looping body samples
+    let body = decoded.samples[loop_start..loop_end].into_iter()
+        .cycle()
+        .take(loop_length * opts.loops);
+
+    // fading outro samples
+    let fade_length_float = (fade_length >> 1) as f64;
+    let outro = decoded.samples[loop_start..(loop_start + fade_length)]
+        .chunks_exact(2)
+        .enumerate()
+        // linear scale index into fade duration
+        .map(|(i, chunk)| (1.0 - i as f64 / fade_length_float, chunk))
+        // and then apply the scale to each element
+        .flat_map(|(scale, chunk)| chunk.iter().map(move |sample| (*sample as f64 * scale) as i16));
+
+    // optimization: working on references and then copying at the end seems to yield better performance
+    intro
+        .chain(body)
+        .copied()
+        .chain(outro)
+        .collect::<Vec<_>>()
+}
+
+fn main() -> Result<(), Box<dyn Error>> {
+    let mut opts = CliOpts::parse();
+
+    // If automatic naming, generate the output file name, replacing the extension with ogg
+    if opts.automatic_name {
+        let mut output_path = opts.output.clone();
+        let mut output_file = opts.input.file_stem()
+            .ok_or_else(|| anyhow!("Input filename is invalid"))?
+            .to_str().unwrap()
+            .to_string();
+
+        output_file.push_str(".mp3");
+        output_path.push(output_file);
+
+        opts.output = output_path;
+    }
+
+    if opts.output.exists() && !opts.yes {
+        let friendly_name = opts.output.file_name().and_then(|f| f.to_str()).unwrap();
+        let prompt_str = format!("The file {} already exists", friendly_name);
+        if prompt(&prompt_str, true)? {
+            return Err(anyhow!("File already exists, could not overwrite.").into());
         }
     }
 
     println!(
-        "Encoding {}...",
-        input_path.file_name().unwrap().to_str().unwrap()
+        "Encoding layer {} of {}...",
+        (opts.layer),
+        opts.input.file_name().unwrap().to_str().unwrap()
     );
 
-    let input_file = File::open(input_path).unwrap_or_else(|e| {
-        println!("Count not open input file: {}", e);
-        std::process::exit(1);
-    });
-
-    let mut output_file = File::create(output_path).unwrap_or_else(|e| {
-        println!("Count not open output file: {}", e);
-        std::process::exit(1);
-    });
-
-    let mut decoder = Decoder::new(input_file).unwrap();
-    let mut loop_start = 0;
-    let mut loop_end = 0;
-
-    let layer: usize = matches.value_of("layer").unwrap().parse::<usize>().expect(
-        "Layer is not a number",
-    ) - 1;
-    let fade: usize = matches.value_of("fade").unwrap().parse().expect(
-        "Fade duration is not a number",
-    );
-    let loops: usize = matches.value_of("loops").unwrap().parse().expect(
-        "Loop count is not a number",
-    );
-
-    for comment in decoder.comments().iter() {
-        if comment.starts_with("LoopStart=") {
-            loop_start = comment[10..].parse().expect("LoopStart is not a number!");
-        } else if comment.starts_with("LoopEnd=") {
-            loop_end = comment[8..].parse().expect("LoopEnd is not a number!");
-        }
-    }
+    let mut decoded = decode_ogg(opts.layer - 1, &opts)?;
 
     // Catch both error states and states where loop start and end are 0
-    let process = if loop_end <= loop_start {
-        false
+    let should_process = opts.process && decoded.loop_end >= decoded.loop_start;
+
+    let samples = if should_process {
+        process_pcm(&mut decoded, &opts)
     } else {
-        !matches.is_present("no-process")
-    };
-
-    let mut source = Vec::new();
-    let mut frequency = 0;
-
-    for p in decoder.packets() {
-        if let Ok(packet) = p {
-            frequency = packet.rate;
-
-            source.reserve(packet.data.len() / packet.channels as usize * 2);
-
-            // special case: mono
-            if packet.channels == 1 {
-                for sample in packet.data {
-                    source.push(sample);
-                    source.push(sample);
-                }
-            } else {
-                if layer >= packet.channels as usize / 2 {
-                    println!(
-                        "This file only has {} layer(s), when you asked to encode layer {}!",
-                        packet.channels / 2,
-                        layer + 1
-                    );
-                    std::process::exit(1);
-                };
-
-                for i in 0..packet.data.len() / packet.channels as usize {
-                    let index = i * packet.channels as usize + (layer as usize * 2);
-                    source.push(packet.data[index]);
-                    source.push(packet.data[index + 1]);
-                }
-            }
-        }
-    }
-
-    let samples = if process {
-        let loop_start = loop_start * 2;
-        let loop_end = loop_end * 2;
-        let loop_length = loop_end - loop_start;
-
-        let fade_length = fade * frequency as usize * 2;
-
-        let mut pcm = vec![0i16; loop_start + loop_length * loops + fade_length];
-
-        // intro
-        pcm[0..loop_start].copy_from_slice(&source[..loop_start]);
-
-        // loops
-        for i in 0..loops {
-            let slice_start = loop_start + loop_length * i;
-            let slice_end = loop_start + loop_length * i + loop_length;
-            pcm[slice_start..slice_end].copy_from_slice(&source[loop_start..loop_end]);
-        }
-
-        // fade
-        if fade_length > 0 {
-            let fade = &mut source[loop_start..(loop_start + fade_length)];
-            for i in 0..(fade_length >> 1) {
-                let scale = 1.0 - i as f64 / (fade_length >> 1) as f64;
-                fade[i * 2] = (fade[i * 2] as f64 * scale) as i16;
-                fade[i * 2 + 1] = (fade[i * 2 + 1] as f64 * scale) as i16;
-            }
-
-            let slice_start = loop_start + loop_length * loops;
-            let slice_end = loop_start + loop_length * loops + fade_length;
-            pcm[slice_start..slice_end].copy_from_slice(&fade);
-        }
-
-        pcm
-    } else {
-        source
+        decoded.samples
     };
 
     let mut pcm = vec![0u8; samples.len() * 2];
     LittleEndian::write_i16_into(&samples, &mut pcm);
 
+    let mut output_file = File::create(&opts.output).with_context(|| format!("Could not open output file {:?} for writing", &opts.output))?;
+
     // pcm now contains the full pcm data
-    encode_mp3(&mut Cursor::new(pcm), &mut output_file);
+    encode_mp3(&mut Cursor::new(pcm), &mut output_file)?;
+
+    Ok(())
 }

@@ -1,19 +1,17 @@
 [package]
 name = "xivloop"
-version = "0.1.0"
+version = "0.2.0"
 authors = ["Tylian <immatyger@gmail.com>"]
+edition = "2018"
 
 [dependencies]
-libc = "0.2.29"
-lame-sys = "0.1.2"
-time = "0.1.38"
+anyhow = "1.0"
+libc = "0.2"
 byteorder = "1.1.0"
+lame-sys = "0.1.2"
+lewton = "0.10.1"
 
 [dependencies.clap]
-version = "2.16.2"
-features = ["yaml"]
-
-[dependencies.vorbis]
-#path = "../vorbis-rs"
-git = "https://github.com/tylian/vorbis-rs"
+version = "3.0.0-beta.2"
 default-features = false
+features = ["std", "derive", "color"]

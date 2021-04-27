@@ -64,7 +64,7 @@ fn prompt(prompt: &str, default: bool) -> Result<bool> {
     }
 }
 
-fn process_pcm(decoded: &DecodedFile, opts: &CliOpts) -> Vec<i16> {
+fn process_samples(decoded: &DecodedFile, opts: &CliOpts) -> Vec<i16> {
     let loop_start = decoded.loop_start * 2;
     let loop_end = decoded.loop_end * 2;
     let loop_length = loop_end - loop_start;
@@ -134,7 +134,7 @@ fn main() -> Result<(), Box<dyn Error>> {
     let should_process = opts.process && decoded.loop_end >= decoded.loop_start;
 
     let samples = if should_process {
-        process_pcm(&mut decoded, &opts)
+        process_samples(&mut decoded, &opts)
     } else {
         decoded.samples
     };
